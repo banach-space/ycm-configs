@@ -1,5 +1,5 @@
 '''
-Basic .ycm_extra_conf.py for LLVM
+Basic .ycm_extra_conf.py for LLVM (to be used with a compilation database)
 
 To get the most out of YouCompleteMe when using it to navigate through LLVM,
 make sure that you generate a compile_commands.json file in your build
@@ -11,7 +11,7 @@ You can get CMake to generate this file for you by running:
 details:
     http://clang.llvm.org/docs/JSONCompilationDatabase.html
 
-Although YouCompleteMe can be used witout a compilation database, your milege
+Although YouCompleteMe can be used without a compilation database, your mileage
 will vary.
 
 LICENSE:
@@ -42,6 +42,7 @@ LICENSE:
 '''
 
 import os
+import subprocess
 import ycm_core
 
 # These are the compilation flags that will be used in case there's no
@@ -51,6 +52,9 @@ DEFAULT_FLAGS = ['-x', 'c++', '-Wall', '-Wextra', '-Werror']
 # Set this to the absolute path to the folder (not the file!) containing the
 # compile_commands.json file to use that instead of 'DEFAULT_FLAGS'. This is
 # normally the LLVM build directory.
+# =========================> IMPORTANT!!!! <================================
+#           PROVIDE THE PATH TO THE COMPILATION DATABASE
+# =========================> IMPORTANT!!!! <================================
 COMPILATION_DATABASE_FOLDER = ''
 
 if os.path.exists(COMPILATION_DATABASE_FOLDER):
@@ -58,56 +62,128 @@ if os.path.exists(COMPILATION_DATABASE_FOLDER):
 else:
     DATABASE = None
 
-SOURCE_EXTENSIONS = ['.cpp', '.cxx', '.cc', '.c', '.m', '.mm']
+LLVM_CPP_SOURCE_EXTENSION = '.cpp'
 
-def IsHeaderFile(filename):
-    '''
-    Returns true if `filename` is a header file.
-    '''
+
+def is_header_file(filename):
+    ''' Returns true if `filename` representes a header file '''
     _, extension = os.path.splitext(filename)
     return extension in ['.h', '.hxx', '.hpp', '.hh']
 
 
-def FindCorrespondingLLVMSourceFile(filename):
-    '''
-    For LLVM source files returns the input param (because it already
-    represents a source file). For an LLVM header file `filename`, finds the
-    corresponding LLVM source file using the following heuristics:
-        * replace `include/llvm` with `lib/Support`
-    '''
-    if IsHeaderFile(filename):
-        header_dir, header_file = os.path.split(filename)
-        header_dir_split = header_dir.split('/')
-        include_idx = header_dir_split.index('include')
+def header_to_source_dir_support(header_file_dir):
+    ''' Takes a header file dir and returns the full path of lib/Support
 
-        # Generate the source file directory
-        source_dir_split = header_dir_split.copy()
-        source_dir_split[include_idx] = 'lib'
-        source_dir_split[include_idx+1] = 'Support'
-        source_dir_split.pop()
-        source_dir = os.path.join('/', *source_dir_split)
+    Does the following directory transformation:
+        in: <LLVM_ROOT>/include/llvm/<LLVM_INCLUDE_SUBDIR>
+        out: <LLVM_ROOT>/lib/Support
+    The output source directory is a possible location of source files
+    corresponding to header files in the input dir.
 
-        header_file_name, _ = os.path.splitext(header_file)
-        for ext in SOURCE_EXTENSIONS:
-            replacement_file = os.path.join(source_dir, header_file_name + ext)
-            if os.path.exists(replacement_file):
-                return replacement_file
-    return filename
+    Examples of source-header couples for which this approach works:
+        * APFLoat.{cpp|h}
+        * Optional.{cpp|h}
+    '''
+    header_dir_split = header_file_dir.split('/')
+    include_idx = header_dir_split.index('include')
+
+    source_dir_split = header_dir_split.copy()
+    source_dir_split[include_idx] = 'lib'
+    source_dir_split[include_idx+1] = 'Support'
+    source_dir_split.pop()
+    source_dir = os.path.join('/', *source_dir_split)
+
+    return source_dir
+
+
+def header_to_source_dir_generic(header_file_dir):
+    ''' Takes a header file dir and returns the corresponding source dir
+
+    Does the following directory transformation:
+        in: <LLVM_ROOT>/include/llvm/<LLVM_INCLUDE_SUBDIR>
+        out: <LLVM_ROOT>/lib/<LLVM_INCLUDE_SUBDIR>
+    The output source directory is the most likely location of source files
+    corresponding to header files in the input dir.
+
+    Examples of source-header couples for which this approach works:
+        * Value.{cpp|h}
+    '''
+    header_dir_split = header_file_dir.split('/')
+    include_idx = header_dir_split.index('include')
+
+    source_dir_split = header_dir_split.copy()
+    source_dir_split[include_idx] = 'lib'
+    # Get the index of the last occurrence of "llvm" in the path. This
+    # component of the path is only present in header files and appears after
+    # "include", e.g. "include/llvm"
+    idx = len(source_dir_split) - 1 - source_dir_split[::-1].index('llvm')
+    source_dir_split.pop(idx)
+    source_dir = os.path.join('/', *source_dir_split)
+
+    return source_dir
+
+
+def find_llvm_source_file(header_file_path):
+    '''
+    Finds an llvm source file that corresponds to the input header file
+
+    For most header files there's a corresponding source file, e.g. Value.h and
+    Value.cpp. This function returns the path to that source file. If no such
+    file exists, then any source file that includes the input header file is
+    returned. If that also fails then the input header file is returned.
+    '''
+    header_file_dir, header_file_base = os.path.split(header_file_path)
+    header_file_name, _ = os.path.splitext(header_file_base)
+
+    # 1. Policy #1 for finding source files
+    source_dir = header_to_source_dir_generic(header_file_dir)
+
+    source_file = header_file_name + LLVM_CPP_SOURCE_EXTENSION
+    replacement_file_path = os.path.abspath(os.path.join(source_dir,
+                                                         source_file))
+
+    if os.path.exists(replacement_file_path):
+        return replacement_file_path
+
+    # 2. Policy #2 for finding source files
+    source_dir = header_to_source_dir_support(header_file_dir)
+
+    source_file = header_file_name + LLVM_CPP_SOURCE_EXTENSION
+    replacement_file_path = os.path.abspath(os.path.join(source_dir,
+                                                         source_file))
+
+    if os.path.exists(replacement_file_path):
+        return replacement_file_path
+
+    # 3. Policy #3 for finding source files
+    # When there are no *.cpp files corresponding to this header file, just use
+    # any file that includes it.
+    out = subprocess.check_output(["grep", "-IlZEr", "--include=*.cpp",
+                                   "--exclude-dir={Target,unittests,tools}",
+                                   header_file_base])
+    out_list = out.decode('UTF-8').rstrip()
+    out_list = out_list.split("\x00")
+    replacement_file_path = os.path.abspath(out_list[int(len(out_list) / 2)])
+    if os.path.exists(replacement_file_path):
+        return replacement_file_path
+
+    return header_file_path
 
 
 def FlagsForFile(filename):
     '''
-    Return compiler flags for file `filename`.
-    '''
-    # If the file is a header, try to find the corresponding source file and
-    # retrieve its flags from the compilation DATABASE if using one. This is
-    # necessary since compilation DATABASEs don't have entries for header
-    # files.  In addition, use this source file as the translation unit. This
-    # makes it possible to jump from a declaration in the header file to its
-    # definition in the corresponding source file.
-    filename = FindCorrespondingLLVMSourceFile(filename)
+    Return compiler flags for the input file.
 
-    if not DATABASE:
+    The name does not conform to snake_case style from PEP8, but that's
+    required by YouCompleteMe
+    '''
+    # If the file is a header, try to find the corresponding source file. This
+    # is necessary since compilation DATABASEs don't have entries for header
+    # files.
+    if is_header_file(filename):
+        filename = find_llvm_source_file(filename)
+
+    if not DATABASE or is_header_file(filename):
         return {
             'flags': DEFAULT_FLAGS,
             'include_paths_relative_to_dir':
