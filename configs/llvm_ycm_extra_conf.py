@@ -135,7 +135,7 @@ def find_llvm_source_file(header_file_path):
     header_file_dir, header_file_base = os.path.split(header_file_path)
     header_file_name, _ = os.path.splitext(header_file_base)
 
-    # 1. Policy #1 for finding source files
+    # Policy #1: Look for the corresponding *.cpp file
     source_dir = header_to_source_dir_generic(header_file_dir)
 
     source_file = header_file_name + LLVM_CPP_SOURCE_EXTENSION
@@ -145,7 +145,7 @@ def find_llvm_source_file(header_file_path):
     if os.path.exists(replacement_file_path):
         return replacement_file_path
 
-    # 2. Policy #2 for finding source files
+    # Policy #2: Look for the corresponding *.cpp file
     source_dir = header_to_source_dir_support(header_file_dir)
 
     source_file = header_file_name + LLVM_CPP_SOURCE_EXTENSION
@@ -155,11 +155,18 @@ def find_llvm_source_file(header_file_path):
     if os.path.exists(replacement_file_path):
         return replacement_file_path
 
-    # 3. Policy #3 for finding source files
-    # When there are no *.cpp files corresponding to this header file, just use
-    # any file that includes it.
+    # Policy #3: There are no *.cpp files corresponding to this header file.
+    # Use any file that includes it instead.
+    # The following `grep` command has a separate `--exclude-dir` for each
+    # directory. On the command line the following works as well:
+    #   $ grep -IlZEr --include=*.cpp --exclude-dir={Target,unittests,tools}
+    #   header_file_base
+    # I don't know why that doesn't work when running through subprocess
+    # module.
     out = subprocess.check_output(["grep", "-IlZEr", "--include=*.cpp",
-                                   "--exclude-dir={Target,unittests,tools}",
+                                   "--exclude-dir=Target",
+                                   "--exclude-dir=unittests",
+                                   "--exclude-dir=tools",
                                    header_file_base])
     out_list = out.decode('UTF-8').rstrip()
     out_list = out_list.split("\x00")
