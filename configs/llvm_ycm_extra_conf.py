@@ -67,7 +67,10 @@ LLVM_CPP_SOURCE_EXTENSION = '.cpp'
 
 def is_header_file(filename):
     ''' Returns true if `filename` representes a header file '''
-    _, extension = os.path.splitext(filename)
+    try:
+        _, extension = os.path.splitext(filename)
+    except OSError:
+        return False
     return extension in ['.h', '.hxx', '.hpp', '.hh']
 
 
@@ -85,12 +88,44 @@ def header_to_source_dir_support(header_file_dir):
         * Optional.{cpp|h}
     '''
     header_dir_split = header_file_dir.split('/')
-    include_idx = header_dir_split.index('include')
+    try:
+        include_idx = header_dir_split.index('include')
+    except ValueError:
+        # The input file is not a traditional header file (could be
+        # <something>.inc.h somewhere in Lib/Target, e.g.
+        # SVEISelLowering.inc.h). In such cases just bail out.
+        invalid_dir = os.path.join(header_file_dir,
+                "SomeDummyStringToInvalidateThePath")
+        return invalid_dir
 
     source_dir_split = header_dir_split.copy()
     source_dir_split[include_idx] = 'lib'
     source_dir_split[include_idx+1] = 'Support'
     source_dir_split.pop()
+    source_dir = os.path.join('/', *source_dir_split)
+
+    return source_dir
+
+def header_to_source_dir_clang(header_file_dir):
+    ''' Takes a clang header file dir and returns the correspodning source dir
+
+    Does the following directory transformation:
+        in: <LLVM_ROOT>/tools/clang/include/clang/<CLANG_INCLUDE_SUBDIR>
+        out: <LLVM_ROOT>/tools/clang/lib/<CLANG_INCLUDE_SUBDIR>
+    The output source directory is a possible location of source files
+    corresponding to header files in the input dir.
+
+    Examples of source-header couples for which this approach works:
+        * ParsedAttr.{cpp|h}
+    '''
+    header_dir_split = header_file_dir.split('/')
+    include_idx = header_dir_split.index('include')
+
+    source_dir_split = header_dir_split.copy()
+    # Replace 'include' with 'lib'
+    source_dir_split[include_idx] = 'lib'
+    # Remove 'clang' (the one following 'include')
+    del source_dir_split[include_idx+1]
     source_dir = os.path.join('/', *source_dir_split)
 
     return source_dir
@@ -109,7 +144,15 @@ def header_to_source_dir_generic(header_file_dir):
         * Value.{cpp|h}
     '''
     header_dir_split = header_file_dir.split('/')
-    include_idx = header_dir_split.index('include')
+    try:
+        include_idx = header_dir_split.index('include')
+    except ValueError:
+        # This file is not a traditional header file (could be
+        # <something>.inc.h somewhere in Lib/Target, e.g.
+        # SVEISelLowering.inc.h). In such cases just bail out.
+        invalid_dir = os.path.join(header_file_dir,
+                "SomeDummyStringToInvalidateThePath")
+        return invalid_dir
 
     source_dir_split = header_dir_split.copy()
     source_dir_split[include_idx] = 'lib'
@@ -164,17 +207,42 @@ def find_llvm_source_file(header_file_path):
     # I don't know why that doesn't work when running through subprocess
     # module.
     out = subprocess.check_output(["grep", "-IlZEr", "--include=*.cpp",
-                                   "--exclude-dir=Target",
+                                   # Commenting this out for SVEISelLowering.inc.h
+                                   # "--exclude-dir=Target",
                                    "--exclude-dir=unittests",
                                    "--exclude-dir=tools",
                                    header_file_base])
     out_list = out.decode('UTF-8').rstrip()
     out_list = out_list.split("\x00")
+    out_list.remove("")
     replacement_file_path = os.path.abspath(out_list[int(len(out_list) / 2)])
     if os.path.exists(replacement_file_path):
         return replacement_file_path
 
     return header_file_path
+
+
+def find_clang_source_file(header_file_path):
+    '''
+    Finds an clang source file that corresponds to the input header file
+
+    For most header files there's a corresponding source file, e.g. Value.h and
+    Value.cpp. This function returns the path to that source file. If no such
+    file exists, then any source file that includes the input header file is
+    returned. If that also fails then the input header file is returned.
+    '''
+    header_file_dir, header_file_base = os.path.split(header_file_path)
+    header_file_name, _ = os.path.splitext(header_file_base)
+
+    # Policy #1: Look for the corresponding *.cpp file
+    source_dir = header_to_source_dir_clang(header_file_dir)
+
+    source_file = header_file_name + LLVM_CPP_SOURCE_EXTENSION
+    replacement_file_path = os.path.abspath(os.path.join(source_dir,
+                                                         source_file))
+
+    if os.path.exists(replacement_file_path):
+        return replacement_file_path
 
 
 def FlagsForFile(filename):
@@ -188,7 +256,10 @@ def FlagsForFile(filename):
     # is necessary since compilation DATABASEs don't have entries for header
     # files.
     if is_header_file(filename):
-        filename = find_llvm_source_file(filename)
+        if "include/llvm" in filename:
+            filename = find_llvm_source_file(filename)
+        elif "tools/clang" in filename:
+            filename = find_clang_source_file(filename)
 
     if not DATABASE or is_header_file(filename):
         return {
