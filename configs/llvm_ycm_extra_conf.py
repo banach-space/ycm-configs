@@ -256,7 +256,9 @@ def FlagsForFile(filename):
     # is necessary since compilation DATABASEs don't have entries for header
     # files.
     if is_header_file(filename):
-        if "include/llvm" in filename:
+        # Majority LLVM header files live in "include/llvm", except for e.g.
+        # "inc.h"
+        if any(substr in filename for substr in ["include/llvm", "inc.h"]):
             filename = find_llvm_source_file(filename)
         elif "tools/clang" in filename:
             filename = find_clang_source_file(filename)
